@@ -1,3 +1,6 @@
+using MCP.Core.Models.Protocol;
+using MCP.Core.Models.Server;
+using MCP.Core.Protocol;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -6,7 +9,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Transport
 {
     internal class McpRequestReader
     {

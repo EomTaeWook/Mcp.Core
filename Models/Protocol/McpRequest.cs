@@ -1,6 +1,6 @@
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Models.Protocol
 {
     public class McpRequest
     {

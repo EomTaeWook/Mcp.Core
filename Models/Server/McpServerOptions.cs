@@ -1,4 +1,4 @@
-namespace MCP.Core
+namespace MCP.Core.Models.Server
 {
     public class McpServerOptions
     {

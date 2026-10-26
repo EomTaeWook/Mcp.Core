@@ -1,4 +1,4 @@
-namespace MCP.Core
+namespace MCP.Core.Attributes
 {
     [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
     public class ControllerAttribute : Attribute

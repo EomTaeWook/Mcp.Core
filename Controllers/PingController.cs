@@ -1,6 +1,7 @@
+using MCP.Core.Models.Protocol;
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Controllers
 {
     [Controller("ping")]
     internal class PingController : McpControllerBase

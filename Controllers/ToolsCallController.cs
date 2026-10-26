@@ -1,7 +1,9 @@
+using MCP.Core.Models.Protocol;
+using MCP.Core.Tools;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Controllers
 {
     [Controller("tools/call")]
     internal class ToolsCallController : McpControllerBase

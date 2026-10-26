@@ -1,8 +1,9 @@
+using MCP.Core.Models.Protocol;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Controllers
 {
     [Controller("notifications/cancelled")]
     internal class NotificationsCancelledController : McpControllerBase

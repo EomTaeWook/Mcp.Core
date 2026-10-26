@@ -1,6 +1,7 @@
+using MCP.Core.Models.Tools;
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Tools
 {
     public class McpTool
     {

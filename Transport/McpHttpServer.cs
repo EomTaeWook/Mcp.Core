@@ -1,11 +1,15 @@
 using Dignus.DependencyInjection;
+using MCP.Core.Models.Protocol;
+using MCP.Core.Models.Server;
+using MCP.Core.Protocol;
+using MCP.Core.Tools;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Transport
 {
     public class McpHttpServer : IAsyncDisposable
     {

@@ -1,6 +1,9 @@
+using MCP.Core.Models.Protocol;
+using MCP.Core.Models.Server;
+using MCP.Core.Protocol;
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Controllers
 {
     [Controller("server/discover")]
     internal class ServerDiscoverController : McpControllerBase
