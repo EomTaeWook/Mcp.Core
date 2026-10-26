@@ -1,3 +1,4 @@
+using MCP.Core.Models.Server;
 using System.Text.Json.Nodes;
 
 namespace MCP.Core

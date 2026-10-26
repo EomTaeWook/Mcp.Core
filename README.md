@@ -1,6 +1,6 @@
 # MCP.Core
 
-MCP 도구 서버의 HTTP 전송·JSON-RPC·컨트롤러 라우팅을 제공하는 .NET 10 클래스 라이브러리다. Dignus 1.4.3의 DI를 사용하며 ASP.NET Core·Avalonia·Eidolon App/Core에 의존하지 않는다. 독립 솔루션은 `MCP.Core.slnx`, 프로젝트는 `MCP.Core.csproj`, 네임스페이스는 `MCP.Core`다. 라이선스는 [MIT](LICENSE)다.
+MCP 도구 서버의 HTTP 전송·JSON-RPC·컨트롤러 라우팅을 제공하는 .NET 10 클래스 라이브러리다. Dignus 1.4.3의 DI와 Dignus.Actor.Core 2.1.12의 요청 액터를 사용하며 ASP.NET Core·Avalonia·Eidolon App/Core에 의존하지 않는다. 독립 솔루션은 `MCP.Core.slnx`, 프로젝트는 `MCP.Core.csproj`, 기본 네임스페이스는 `MCP.Core`이며 공개 타입은 기능별 하위 네임스페이스에 둔다. 라이선스는 [MIT](LICENSE)다. Dignus.Actor.Core와 전이 의존성 Dignus.Actor.Abstractions도 [MIT](https://github.com/EomTaeWook/Dignus.ActorServer/blob/4ae7647d68a0594e04c9ae37e822be62ef686d05/LICENSE)다.
 
 ## 연결
 
@@ -26,7 +26,10 @@ git submodule update --init --recursive
 도구 이름·설명·입력 스키마와 핸들러는 호스트가 제공한다. UI·로그·업무 큐·저장소와 생성·학습·DB 기능은 호스트의 책임이다.
 
 ```csharp
-using MCP.Core;
+using MCP.Core.Models.Server;
+using MCP.Core.Models.Tools;
+using MCP.Core.Tools;
+using MCP.Core.Transport;
 using System.Text.Json.Nodes;
 
 McpTool tool = new McpTool(new McpToolDefinition("get_status", "Read application status.")
@@ -58,7 +61,9 @@ await server.StartAsync();
 컨트롤러는 `McpControllerBase`를 상속하고 `[Controller("메서드 이름")]`으로 JSON-RPC 메서드에 연결한다. `MethodName` 상수나 수동 타입 목록은 사용하지 않는다. 기본 컨트롤러는 라이브러리 어셈블리에서 찾고 `controllerAssembly`에 전달한 호스트 어셈블리에서도 추가 컨트롤러를 찾는다. 이름은 대소문자를 구분하며 중복 등록은 서버 생성 시 거절한다.
 
 ```csharp
-using MCP.Core;
+using MCP.Core.Attributes;
+using MCP.Core.Controllers;
+using MCP.Core.Models.Protocol;
 using System.Text.Json.Nodes;
 
 [Controller("example/status")]
@@ -102,12 +107,20 @@ await using McpHttpServer server = new McpHttpServer(new McpServerOptions
 
 입력 스키마는 JSON Schema 2020-12의 제한된 부분집합이다. 단일 `type`, `properties`, `required`, Boolean `additionalProperties`, `items`, `enum`, 숫자·문자열·배열 길이 제한을 사용한다. `title`, `description`, `default`, `examples`는 메타데이터다. `$ref`, 조합 스키마·정규식 등 미지원 키워드는 등록 시 거절한다. 업무 검증은 핸들러가 소유한다.
 
-루프백 주소만 바인딩하고 Host·Origin을 검증한다. 선택적 `AccessToken`은 Bearer 헤더로 검증하고 저장하지 않는다. 기본 제한은 요청 크기 1 MiB, 동시 HTTP 요청 8건, 요청당 2분이다. Windows URL 예약 권한이나 시스템 설정은 자동 변경하지 않는다.
+루프백 주소만 바인딩하고 Host·Origin을 검증한다. 선택적 `AccessToken`은 Bearer 헤더로 검증하고 저장하지 않는다. 기본 제한은 요청 크기 1 MiB, 요청당 2분이다. `MaximumConcurrentRequests`는 접수 중인 HTTP 요청 한도와 요청 액터 수를 함께 정한다. 기본값은 `Math.Min(Environment.ProcessorCount, 128)`이며 호스트는 1~128 사이에서 직접 지정할 수 있다. Windows URL 예약 권한이나 시스템 설정은 자동 변경하지 않는다.
+
+## 요청 액터
+
+HTTP 수신·입력 검증 뒤 일반 요청을 액터에 순환 배정한다. 각 액터는 Dignus의 메일박스에서 하나씩 처리하며 비동기 디스패치가 끝날 때까지 다음 요청을 실행하지 않는다. 컨트롤러는 실행 시점에 기존 Dignus DI에서 `Transient`로 생성한다. 디스패치 결과·예외·취소는 기존 요청 실행 객체의 완료 신호로 HTTP 응답 경로에 전달하며 특정 요청의 실패가 액터를 종료하지 않는다.
+
+액터 수와 같은 수의 디스패처 스레드를 서버 시작 시 생성한다. `MaximumConcurrentRequests = 10`이면 액터·디스패처가 각각 10개다. 호스트 도구의 공유 서비스가 동시에 호출될 수 있으므로 서비스 자체의 동시성 계약은 호스트가 소유한다. 호스트의 생성·학습 등 업무 큐를 병렬 실행하거나 대체하지 않는다.
+
+대기 중인 요청도 기존 HTTP 요청 슬롯을 점유하며 별도의 대기 용량을 추가하지 않는다. 슬롯이 모두 사용 중이면 기존 `429`와 `Retry-After`를 반환한다. 알림은 액터 메일박스를 거치지 않아 `notifications/cancelled`가 일반 요청 뒤에서 대기하지 않지만 HTTP 접수 한도는 알림에도 적용한다. 요청 제한 시간에는 입력 읽기·액터 대기·실행이 모두 포함된다. 액터가 요청을 받지 못한 경우에도 완료 신호에 오류를 전달한다.
 
 ## 수명과 취소
 
 시작·정지·해제는 호스트가 순서대로 호출한다. 시작·종료를 직렬화하는 별도 세마포어는 두지 않으며 중복 시작의 바인딩 오류는 `HttpListener` 예외로 전달한다. 동시 HTTP 요청 수 제한은 기존 요청 슬롯으로 처리한다. 정지 후 다시 시작할 수 있고 해제 후에는 시작할 수 없다.
 
-정지는 HTTP 수락과 진행 중 요청에 취소를 전달하고 실제 처리 종료를 기다린다. 핸들러는 자신의 하위 작업 종료를 기다려야 하며 서버가 업무 프로세스를 강제 종료하지 않는다. 연결 종료로 이미 접수한 업무를 취소하지 않고 호스트 업무 큐의 수명은 HTTP 요청과 구분한다.
+정지는 HTTP 수락과 대기·진행 중 요청에 취소를 전달하고 실제 HTTP 처리 종료를 기다린 뒤 액터·디스패처를 해제한다. 재시작하면 새 액터 시스템을 만든다. 핸들러는 자신의 하위 작업 종료를 기다려야 하며 서버가 업무 프로세스를 강제 종료하지 않는다. 연결 종료로 이미 접수한 업무를 취소하지 않고 호스트 업무 큐의 수명은 HTTP 요청과 구분한다.
 
 2025 계열의 `notifications/cancelled`는 같은 `requestId`의 진행 중 HTTP 호출을 취소한다. 완료 호출과 호스트 큐에 접수한 업무는 취소하지 않는다. 동시 클라이언트는 진행 중 요청 ID가 겹치지 않게 사용한다. `StateChanged`는 호출 스레드에서 발생하므로 UI는 자체 스레드로 전달한다. 오류 콜백에는 원본 예외를 전달하고 클라이언트에는 내부 스택을 노출하지 않는다.

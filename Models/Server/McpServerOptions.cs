@@ -8,7 +8,7 @@ namespace MCP.Core.Models.Server
         public string Instructions { get; set; } = string.Empty;
         public string AccessToken { get; set; } = string.Empty;
         public int MaximumRequestBytes { get; set; } = 1024 * 1024;
-        public int MaximumConcurrentRequests { get; set; } = 8;
+        public int MaximumConcurrentRequests { get; set; } = Math.Min(Environment.ProcessorCount, 128);
         public TimeSpan RequestTimeout { get; set; } = TimeSpan.FromMinutes(2);
 
         public McpServerOptions()

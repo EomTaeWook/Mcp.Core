@@ -1,7 +1,8 @@
+using Dignus.Actor.Core;
+using Dignus.Actor.Core.DeadLetter;
 using Dignus.DependencyInjection;
 using MCP.Core.Models.Protocol;
 using MCP.Core.Models.Server;
-using MCP.Core.Protocol;
 using MCP.Core.Tools;
 using System.Collections.Concurrent;
 using System.Net;
@@ -19,10 +20,13 @@ namespace MCP.Core.Transport
         private readonly Action<Exception> _onError;
         private readonly SemaphoreSlim _requestSlots;
         private readonly ConcurrentDictionary<long, McpRequestExecution> _requests = new ConcurrentDictionary<long, McpRequestExecution>();
+        private ActorSystem _actorSystem;
+        private IActorRef[] _requestActors = Array.Empty<IActorRef>();
         private HttpListener _listener;
         private CancellationTokenSource _lifetime;
         private Task _acceptTask = Task.CompletedTask;
         private long _nextRequest;
+        private long _nextRequestActor;
         private int _running;
         private bool _disposed;
 
@@ -70,15 +74,32 @@ namespace MCP.Core.Transport
             }
             HttpListener listener = new HttpListener();
             listener.Prefixes.Add(_options.Endpoint.GetLeftPart(UriPartial.Authority) + "/");
+            ActorSystem actorSystem = null;
             try
             {
                 listener.Start();
+                actorSystem = new ActorSystem(_options.MaximumConcurrentRequests);
+                actorSystem.OnDeadLetterDetected += OnDeadLetterDetected;
+                IActorRef[] requestActors = new IActorRef[_options.MaximumConcurrentRequests];
+                for (int actorIndex = 0; actorIndex < requestActors.Length; actorIndex++)
+                {
+                    requestActors[actorIndex] = actorSystem.Spawn(() => new McpRequestActor(_dispatcher));
+                }
+                _requestActors = requestActors;
             }
             catch
             {
-                listener.Close();
+                try
+                {
+                    actorSystem?.Dispose();
+                }
+                finally
+                {
+                    listener.Close();
+                }
                 throw;
             }
+            _actorSystem = actorSystem;
             _listener = listener;
             _lifetime = new CancellationTokenSource();
             SetRunning(true);
@@ -143,6 +164,24 @@ namespace MCP.Core.Transport
             }
         }
 
+        private void OnDeadLetterDetected(DeadLetterMessage message)
+        {
+            if (message.Message is McpRequestExecution execution)
+            {
+                if (message.Reason == DeadLetterReason.MailboxFull)
+                {
+                    execution.DispatchCompletion.TrySetException(new McpProtocolException(-32000, "The MCP request queue is full.", 429));
+                    return;
+                }
+                execution.DispatchCompletion.TrySetException(new InvalidOperationException("The MCP request actor rejected the request: " + message.Reason));
+                return;
+            }
+            if (message.Message is ActorExceptionMessage failure)
+            {
+                ReportError(failure.Exception);
+            }
+        }
+
         private async Task HandleAsync(HttpListenerContext context, McpRequestExecution execution, CancellationToken lifetime)
         {
             McpRequest request = null;
@@ -169,7 +208,10 @@ namespace MCP.Core.Transport
                     context.Response.StatusCode = 202;
                     return;
                 }
-                JsonObject response = await _dispatcher.DispatchAsync(request, token).ConfigureAwait(false);
+                execution.Request = request;
+                int actorIndex = (int)((Interlocked.Increment(ref _nextRequestActor) & long.MaxValue) % _requestActors.Length);
+                _requestActors[actorIndex].Post(execution);
+                JsonObject response = await execution.DispatchCompletion.Task.ConfigureAwait(false);
                 await WriteAsync(context.Response, 200, response, token).ConfigureAwait(false);
             }
             catch (McpProtocolException error)
@@ -186,6 +228,10 @@ namespace MCP.Core.Transport
                 if (error.HttpStatus == 401)
                 {
                     context.Response.Headers["WWW-Authenticate"] = "Bearer";
+                }
+                if (error.HttpStatus == 429)
+                {
+                    context.Response.Headers["Retry-After"] = "1";
                 }
                 await TryWriteErrorAsync(context.Response, error.HttpStatus,
                     McpProtocol.Error(requestId, error.Code, error.Message, error.Details), lifetime).ConfigureAwait(false);
@@ -322,11 +368,20 @@ namespace MCP.Core.Transport
             }
             finally
             {
-                _listener.Close();
-                _listener = null;
-                _lifetime.Dispose();
-                _lifetime = null;
-                _acceptTask = Task.CompletedTask;
+                try
+                {
+                    _actorSystem.Dispose();
+                }
+                finally
+                {
+                    _actorSystem = null;
+                    _requestActors = Array.Empty<IActorRef>();
+                    _listener.Close();
+                    _listener = null;
+                    _lifetime.Dispose();
+                    _lifetime = null;
+                    _acceptTask = Task.CompletedTask;
+                }
             }
         }
 

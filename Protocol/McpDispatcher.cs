@@ -1,4 +1,9 @@
 using Dignus.DependencyInjection;
+using MCP.Core.Attributes;
+using MCP.Core.Controllers;
+using MCP.Core.Models.Protocol;
+using MCP.Core.Models.Server;
+using MCP.Core.Tools;
 using System.Reflection;
 using System.Text.Json.Nodes;
 

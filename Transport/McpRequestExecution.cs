@@ -1,8 +1,10 @@
+using Dignus.Actor.Abstractions;
+using MCP.Core.Models.Protocol;
 using System.Text.Json.Nodes;
 
 namespace MCP.Core.Transport
 {
-    internal class McpRequestExecution : IDisposable
+    internal class McpRequestExecution : IActorMessage, IDisposable
     {
         private readonly CancellationTokenSource _cancellation;
         private JsonNode _requestId;
@@ -15,6 +17,8 @@ namespace MCP.Core.Transport
         }
 
         internal Task Completion { get; set; } = Task.CompletedTask;
+        internal McpRequest Request { get; set; }
+        internal TaskCompletionSource<JsonObject> DispatchCompletion { get; } = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         internal CancellationToken Token
         {

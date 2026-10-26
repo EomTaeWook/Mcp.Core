@@ -1,6 +1,5 @@
 using MCP.Core.Models.Protocol;
 using MCP.Core.Models.Server;
-using MCP.Core.Protocol;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
