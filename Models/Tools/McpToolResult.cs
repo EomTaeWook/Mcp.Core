@@ -4,6 +4,7 @@ namespace MCP.Core.Models.Tools
 {
     public class McpToolResult
     {
+        private readonly string _pngData;
         public string Text { get; private set; }
         public JsonObject StructuredContent { get; private set; }
         public bool IsError { get; private set; }
@@ -22,6 +23,12 @@ namespace MCP.Core.Models.Tools
             Text = StructuredContent.ToJsonString();
         }
 
+        public McpToolResult(JsonObject content, byte[] pngBytes) : this(content)
+        {
+            ArgumentNullException.ThrowIfNull(pngBytes);
+            _pngData = Convert.ToBase64String(pngBytes);
+        }
+
         internal JsonObject ToJson()
         {
             JsonObject result = new JsonObject
@@ -32,6 +39,10 @@ namespace MCP.Core.Models.Tools
                 },
                 ["isError"] = IsError
             };
+            if (_pngData != null)
+            {
+                ((JsonArray)result["content"]).Add(new JsonObject { ["type"] = "image", ["mimeType"] = "image/png", ["data"] = _pngData });
+            }
             if (StructuredContent != null)
             {
                 result["structuredContent"] = StructuredContent.DeepClone();

@@ -103,7 +103,7 @@ await using McpHttpServer server = new McpHttpServer(new McpServerOptions
 - `2026-07-28`: `server/discover`, `ping`, `tools/list`, `tools/call`과 버전·기능 메타데이터 및 HTTP 헤더 검증을 제공한다.
 - `2025-11-25`, `2025-06-18`, `2025-03-26`: 세션 ID 없는 HTTP 초기화 호환 경로다. `initialize`와 `notifications/initialized`를 받으며 GET·DELETE는 405, 알림은 202로 응답한다.
 - 도구 목록은 이름순으로 전체 반환한다. 목록 커서·변경 알림·resources·prompts·sampling·elicitation·tasks는 지원한다고 광고하지 않는다.
-- 결과는 텍스트와 선택적 `structuredContent`다. 이미지 바이트·리소스 링크 전송은 현재 범위가 아니다.
+- 결과는 텍스트와 선택적 `structuredContent`다. `new McpToolResult(metadata, pngBytes)`는 같은 메타데이터와 함께 표준 PNG 이미지 content를 반환한다. 리소스 링크 전송은 제공하지 않는다.
 
 입력 스키마는 JSON Schema 2020-12의 제한된 부분집합이다. 단일 `type`, `properties`, `required`, Boolean `additionalProperties`, `items`, `enum`, 숫자·문자열·배열 길이 제한을 사용한다. `title`, `description`, `default`, `examples`는 메타데이터다. `$ref`, 조합 스키마·정규식 등 미지원 키워드는 등록 시 거절한다. 업무 검증은 핸들러가 소유한다.
 
