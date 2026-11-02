@@ -19,10 +19,6 @@ namespace MCP.Core.Controllers
         public override async Task<JsonObject> ExecuteAsync(McpRequest request, CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
-            if (request.IsModern == true)
-            {
-                return null;
-            }
             JsonNode id = request.Parameters["requestId"];
             if (id == null)
             {

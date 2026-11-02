@@ -192,12 +192,9 @@ namespace MCP.Core.Transport
                 _reader.ValidateConnection(context.Request);
                 request = await _reader.ReadAsync(context.Request, token).ConfigureAwait(false);
                 _reader.ValidateVersion(context.Request, request);
-                if (request.IsModern == false)
+                if (request.Method != "initialize")
                 {
-                    if (request.Method != "initialize")
-                    {
-                        execution.Identify(request.Id);
-                    }
+                    execution.Identify(request.Id);
                 }
                 if (request.IsNotification == true)
                 {
