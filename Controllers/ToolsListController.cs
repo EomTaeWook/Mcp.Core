@@ -1,5 +1,6 @@
 using MCP.Core.Attributes;
 using MCP.Core.Models.Protocol;
+using MCP.Core.Protocol;
 using MCP.Core.Tools;
 using System.Text.Json.Nodes;
 
@@ -22,12 +23,12 @@ namespace MCP.Core.Controllers
             {
                 throw new McpProtocolException(-32602, "This server returns its complete tool list without pagination.");
             }
-            JsonArray descriptions = new JsonArray();
+            JsonArray descriptions = new();
             foreach (McpTool tool in _tools.Values.OrderBy(tool => tool.Name, StringComparer.Ordinal))
             {
                 descriptions.Add(tool.Describe());
             }
-            JsonObject result = new JsonObject { ["tools"] = descriptions };
+            JsonObject result = new() { ["tools"] = descriptions };
             if (request.IsModern == true)
             {
                 result["ttlMs"] = 0;

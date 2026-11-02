@@ -1,5 +1,6 @@
 using MCP.Core.Models.Protocol;
 using MCP.Core.Models.Server;
+using MCP.Core.Protocol;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -45,7 +46,7 @@ namespace MCP.Core.Transport
                 string authorization = request.Headers["Authorization"] ?? string.Empty;
                 if (authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) == false
                     || CryptographicOperations.FixedTimeEquals(_tokenHash,
-                        SHA256.HashData(Encoding.UTF8.GetBytes(authorization.Substring(7)))) == false)
+                        SHA256.HashData(Encoding.UTF8.GetBytes(authorization[7..]))) == false)
                 {
                     throw new McpProtocolException(-32600, "A valid bearer token is required.", 401);
                 }
@@ -96,7 +97,7 @@ namespace MCP.Core.Transport
 
         internal async Task<McpRequest> ReadAsync(HttpListenerRequest request, CancellationToken token)
         {
-            using MemoryStream body = new MemoryStream();
+            using MemoryStream body = new();
             byte[] buffer = new byte[8192];
             while (true)
             {
@@ -125,7 +126,7 @@ namespace MCP.Core.Transport
             {
                 throw new McpProtocolException(-32600, "A valid JSON-RPC 2.0 request or notification is required.");
             }
-            McpRequest parsed = new McpRequest
+            McpRequest parsed = new()
             {
                 Method = message["method"].GetValue<string>(),
                 IsNotification = message.ContainsKey("id") == false
@@ -156,7 +157,7 @@ namespace MCP.Core.Transport
         {
             if (element.ValueKind == JsonValueKind.Object)
             {
-                HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
+                HashSet<string> names = new(StringComparer.Ordinal);
                 foreach (JsonProperty property in element.EnumerateObject())
                 {
                     if (names.Add(property.Name) == false)
@@ -248,7 +249,7 @@ namespace MCP.Core.Transport
             {
                 try
                 {
-                    return new UTF8Encoding(false, true).GetString(Convert.FromBase64String(value.Substring(9, value.Length - 11)));
+                    return new UTF8Encoding(false, true).GetString(Convert.FromBase64String(value[9..^2]));
                 }
                 catch (Exception error) when (error is FormatException || error is DecoderFallbackException)
                 {

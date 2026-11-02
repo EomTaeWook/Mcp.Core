@@ -7,7 +7,7 @@ using MCP.Core.Tools;
 using System.Reflection;
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Protocol
 {
     internal class McpDispatcher
     {
@@ -18,7 +18,7 @@ namespace MCP.Core
         internal McpDispatcher(McpServerOptions options, IReadOnlyList<McpTool> tools, Action<Exception> reportError, Func<JsonNode, Task> cancelRequest, Assembly controllerAssembly, Action<ServiceContainer> configureServices)
         {
             _options = options;
-            Dictionary<string, McpTool> registeredTools = new Dictionary<string, McpTool>(StringComparer.Ordinal);
+            Dictionary<string, McpTool> registeredTools = new(StringComparer.Ordinal);
             foreach (McpTool tool in tools)
             {
                 ArgumentNullException.ThrowIfNull(tool);
@@ -27,11 +27,8 @@ namespace MCP.Core
                     throw new ArgumentException("An MCP tool name is registered more than once: " + tool.Name, nameof(tools));
                 }
             }
-            ServiceContainer services = new ServiceContainer();
-            if (configureServices != null)
-            {
-                configureServices(services);
-            }
+            ServiceContainer services = new();
+            configureServices?.Invoke(services);
             services.RegisterType(options);
             services.RegisterType<IReadOnlyDictionary<string, McpTool>>(registeredTools);
             services.RegisterType<Action<Exception>>(reportError);

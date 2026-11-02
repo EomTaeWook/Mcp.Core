@@ -1,5 +1,6 @@
 using Dignus.Actor.Abstractions;
 using Dignus.Actor.Core;
+using MCP.Core.Protocol;
 using System.Text.Json.Nodes;
 
 namespace MCP.Core.Transport

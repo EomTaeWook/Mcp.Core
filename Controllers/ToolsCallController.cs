@@ -1,6 +1,7 @@
 using MCP.Core.Attributes;
 using MCP.Core.Models.Protocol;
 using MCP.Core.Models.Tools;
+using MCP.Core.Protocol;
 using MCP.Core.Tools;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -8,16 +9,10 @@ using System.Text.Json.Nodes;
 namespace MCP.Core.Controllers
 {
     [Controller("tools/call")]
-    internal class ToolsCallController : McpControllerBase
+    internal class ToolsCallController(IReadOnlyDictionary<string, McpTool> tools, Action<Exception> reportError) : McpControllerBase
     {
-        private readonly IReadOnlyDictionary<string, McpTool> _tools;
-        private readonly Action<Exception> _reportError;
-
-        public ToolsCallController(IReadOnlyDictionary<string, McpTool> tools, Action<Exception> reportError)
-        {
-            _tools = tools;
-            _reportError = reportError;
-        }
+        private readonly IReadOnlyDictionary<string, McpTool> _tools = tools;
+        private readonly Action<Exception> _reportError = reportError;
 
         public override async Task<JsonObject> ExecuteAsync(McpRequest request, CancellationToken token)
         {
@@ -31,7 +26,7 @@ namespace MCP.Core.Controllers
             {
                 throw new McpProtocolException(-32602, "Unknown tool: " + name);
             }
-            JsonObject arguments = new JsonObject();
+            JsonObject arguments = [];
             if (parameters.ContainsKey("arguments") == true)
             {
                 if (parameters["arguments"] is not JsonObject supplied)

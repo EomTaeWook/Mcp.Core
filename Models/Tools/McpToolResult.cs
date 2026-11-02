@@ -31,7 +31,7 @@ namespace MCP.Core.Models.Tools
 
         internal JsonObject ToJson()
         {
-            JsonObject result = new JsonObject
+            JsonObject result = new()
             {
                 ["content"] = new JsonArray
                 {

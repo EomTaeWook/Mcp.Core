@@ -3,6 +3,7 @@ using Dignus.Actor.Core.DeadLetter;
 using Dignus.DependencyInjection;
 using MCP.Core.Models.Protocol;
 using MCP.Core.Models.Server;
+using MCP.Core.Protocol;
 using MCP.Core.Tools;
 using System.Collections.Concurrent;
 using System.Net;
@@ -19,7 +20,7 @@ namespace MCP.Core.Transport
         private readonly McpDispatcher _dispatcher;
         private readonly Action<Exception> _onError;
         private readonly SemaphoreSlim _requestSlots;
-        private readonly ConcurrentDictionary<long, McpRequestExecution> _requests = new ConcurrentDictionary<long, McpRequestExecution>();
+        private readonly ConcurrentDictionary<long, McpRequestExecution> _requests = new();
         private ActorSystem _actorSystem;
         private IActorRef[] _requestActors = Array.Empty<IActorRef>();
         private HttpListener _listener;
@@ -72,7 +73,7 @@ namespace MCP.Core.Transport
                     token.ThrowIfCancellationRequested();
                 }
             }
-            HttpListener listener = new HttpListener();
+            HttpListener listener = new();
             listener.Prefixes.Add(_options.Endpoint.GetLeftPart(UriPartial.Authority) + "/");
             ActorSystem actorSystem = null;
             try
@@ -126,7 +127,7 @@ namespace MCP.Core.Transport
                         continue;
                     }
                     long id = Interlocked.Increment(ref _nextRequest);
-                    McpRequestExecution request = new McpRequestExecution(lifetime.Token, _options.RequestTimeout);
+                    McpRequestExecution request = new(lifetime.Token, _options.RequestTimeout);
                     _requests.TryAdd(id, request);
                     request.Completion = Task.Run(() => HandleAsync(context, request, lifetime.Token));
                     _ = request.Completion.ContinueWith(completed =>

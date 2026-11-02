@@ -1,20 +1,12 @@
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Protocol
 {
-    internal class McpProtocolException : Exception
+    internal class McpProtocolException(int code, string message, int httpStatus = 400, JsonObject details = null) : Exception(message)
     {
-        public int Code { get; private set; }
-        public int HttpStatus { get; private set; }
-        public JsonObject Details { get; private set; }
+        public int Code { get; private set; } = code;
+        public int HttpStatus { get; private set; } = httpStatus;
+        public JsonObject Details { get; private set; } = details;
         public JsonNode RequestId { get; set; }
-
-        public McpProtocolException(int code, string message, int httpStatus = 400, JsonObject details = null)
-            : base(message)
-        {
-            Code = code;
-            HttpStatus = httpStatus;
-            Details = details;
-        }
     }
 }

@@ -39,7 +39,7 @@ namespace MCP.Core
 
         internal static JsonObject Error(JsonNode id, int code, string message, JsonObject details = null)
         {
-            JsonObject error = new JsonObject { ["code"] = code, ["message"] = message };
+            JsonObject error = new() { ["code"] = code, ["message"] = message };
             if (details != null)
             {
                 error["data"] = details.DeepClone();

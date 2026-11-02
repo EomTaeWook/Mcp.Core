@@ -67,7 +67,7 @@ namespace MCP.Core.Tools
                         {
                             throw new ArgumentException("Schema required must be an array on an object schema.");
                         }
-                        HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);
+                        HashSet<string> names = new(StringComparer.Ordinal);
                         foreach (JsonNode name in required)
                         {
                             if (name == null || name.GetValueKind() != JsonValueKind.String
@@ -124,10 +124,9 @@ namespace MCP.Core.Tools
             if (type == "object" && schema["required"] is JsonArray requiredNames
                 && schema["additionalProperties"]?.GetValue<bool>() == false)
             {
-                JsonObject properties = schema["properties"] as JsonObject;
                 foreach (JsonNode required in requiredNames)
                 {
-                    if (properties == null || properties.ContainsKey(required.GetValue<string>()) == false)
+                    if (schema["properties"] is not JsonObject properties || properties.ContainsKey(required.GetValue<string>()) == false)
                     {
                         throw new ArgumentException("A required property must be defined when additional properties are disabled.");
                     }
@@ -199,10 +198,9 @@ namespace MCP.Core.Tools
                         }
                     }
                 }
-                JsonObject properties = schema["properties"] as JsonObject;
                 foreach (KeyValuePair<string, JsonNode> field in fields)
                 {
-                    if (properties != null && properties[field.Key] is JsonObject definition)
+                    if (schema["properties"] is JsonObject properties && properties[field.Key] is JsonObject definition)
                     {
                         ValidateArguments(definition, field.Value, path + "." + field.Key);
                     }

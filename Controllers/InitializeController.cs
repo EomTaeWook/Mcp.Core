@@ -1,21 +1,16 @@
 using MCP.Core.Attributes;
-using MCP.Core.Controllers;
 using MCP.Core.Models.Protocol;
 using MCP.Core.Models.Server;
+using MCP.Core.Protocol;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace MCP.Core
+namespace MCP.Core.Controllers
 {
     [Controller("initialize")]
-    internal class InitializeController : McpControllerBase
+    internal class InitializeController(McpServerOptions options) : McpControllerBase
     {
-        private readonly McpServerOptions _options;
-
-        public InitializeController(McpServerOptions options)
-        {
-            _options = options;
-        }
+        private readonly McpServerOptions _options = options;
 
         public override Task<JsonObject> ExecuteAsync(McpRequest request, CancellationToken token)
         {
