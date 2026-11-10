@@ -119,6 +119,10 @@ namespace MCP.Core.Transport
                 throw new McpProtocolException(-32600, "A single JSON-RPC message object is required. Batches are not supported.");
             }
             JsonObject message = JsonNode.Parse(document.RootElement.GetRawText()).AsObject();
+            if (message.ContainsKey("method") == false)
+            {
+                return ReadResponse(message);
+            }
             if (message["jsonrpc"]?.GetValueKind() != JsonValueKind.String || message["jsonrpc"].GetValue<string>() != "2.0"
                 || message["method"]?.GetValueKind() != JsonValueKind.String
                 || string.IsNullOrWhiteSpace(message["method"].GetValue<string>()) == true
@@ -153,6 +157,74 @@ namespace MCP.Core.Transport
             return parsed;
         }
 
+        private McpRequest ReadResponse(JsonObject message)
+        {
+            if (message["jsonrpc"]?.GetValueKind() != JsonValueKind.String)
+            {
+                throw new McpProtocolException(-32600, "A JSON-RPC response requires jsonrpc 2.0.");
+            }
+            if (message["jsonrpc"].GetValue<string>() != "2.0")
+            {
+                throw new McpProtocolException(-32600, "A JSON-RPC response requires jsonrpc 2.0.");
+            }
+            if (message.ContainsKey("params") == true)
+            {
+                throw new McpProtocolException(-32600, "A JSON-RPC response must not contain params.");
+            }
+            JsonNode responseId = message["id"];
+            if (responseId == null)
+            {
+                throw new McpProtocolException(-32600, "A JSON-RPC response requires an id.");
+            }
+            if (responseId.GetValueKind() != JsonValueKind.String)
+            {
+                if (responseId.GetValueKind() != JsonValueKind.Number)
+                {
+                    throw new McpProtocolException(-32600, "A response id must be a string or integer.");
+                }
+                if (long.TryParse(responseId.ToJsonString(), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _) == false)
+                {
+                    throw new McpProtocolException(-32600, "A response id must be a string or integer.");
+                }
+            }
+            if (message.ContainsKey("result") == message.ContainsKey("error"))
+            {
+                throw new McpProtocolException(-32600, "A JSON-RPC response requires exactly one result or error.");
+            }
+            if (message.ContainsKey("result") == true)
+            {
+                if (message["result"] is not JsonObject)
+                {
+                    throw new McpProtocolException(-32600, "A sampling result must be an object.");
+                }
+            }
+            else
+            {
+                if (message["error"] is not JsonObject error)
+                {
+                    throw new McpProtocolException(-32600, "A JSON-RPC error must be an object.");
+                }
+                if (error["code"]?.GetValueKind() != JsonValueKind.Number)
+                {
+                    throw new McpProtocolException(-32600, "A JSON-RPC error requires an integer code.");
+                }
+                if (int.TryParse(error["code"].ToJsonString(), NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _) == false)
+                {
+                    throw new McpProtocolException(-32600, "A JSON-RPC error requires an integer code.");
+                }
+                if (error["message"]?.GetValueKind() != JsonValueKind.String)
+                {
+                    throw new McpProtocolException(-32600, "A JSON-RPC error requires a message string.");
+                }
+            }
+            return new McpRequest
+            {
+                Id = responseId.DeepClone(),
+                IsResponse = true,
+                Response = message
+            };
+        }
+
         private void RejectDuplicateProperties(JsonElement element)
         {
             if (element.ValueKind == JsonValueKind.Object)
@@ -179,6 +251,13 @@ namespace MCP.Core.Transport
         internal void ValidateVersion(HttpListenerRequest http, McpRequest request)
         {
             string version = http.Headers["MCP-Protocol-Version"];
+            if (request.IsResponse == true)
+            {
+                if (version == McpProtocol.CurrentVersion)
+                {
+                    throw new McpProtocolException(-32600, "Modern MCP does not accept independent JSON-RPC responses.");
+                }
+            }
             if (request.Method == "initialize")
             {
                 return;

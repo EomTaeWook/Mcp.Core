@@ -44,6 +44,14 @@ namespace MCP.Core.Controllers
             {
                 throw new McpProtocolException(-32602, "initialize requires capabilities as an object.");
             }
+            JsonObject capabilities = parameters["capabilities"].AsObject();
+            if (capabilities.ContainsKey("sampling") == true)
+            {
+                if (capabilities["sampling"] is not JsonObject)
+                {
+                    throw new McpProtocolException(-32602, "Sampling capability must be an object.");
+                }
+            }
             string version = parameters["protocolVersion"].GetValue<string>();
             if (McpProtocol.IsLegacyVersion(version) == false)
             {

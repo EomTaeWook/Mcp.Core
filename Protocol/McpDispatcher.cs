@@ -15,7 +15,7 @@ namespace MCP.Core.Protocol
         private readonly Dictionary<string, Type> _controllerTypes;
         private readonly IServiceProvider _services;
 
-        internal McpDispatcher(McpServerOptions options, IReadOnlyList<McpTool> tools, Action<Exception> reportError, Func<JsonNode, Task> cancelRequest, Assembly controllerAssembly, Action<ServiceContainer> configureServices)
+        internal McpDispatcher(McpServerOptions options, IReadOnlyList<McpTool> tools, Action<Exception> reportError, Func<McpRequest, JsonNode, Task> cancelRequest, Assembly controllerAssembly, Action<ServiceContainer> configureServices)
         {
             _options = options;
             Dictionary<string, McpTool> registeredTools = new(StringComparer.Ordinal);
@@ -32,7 +32,8 @@ namespace MCP.Core.Protocol
             services.RegisterType(options);
             services.RegisterType<IReadOnlyDictionary<string, McpTool>>(registeredTools);
             services.RegisterType<Action<Exception>>(reportError);
-            services.RegisterType<Func<JsonNode, Task>>(cancelRequest);
+            services.RegisterType<Func<McpRequest, JsonNode, Task>>(cancelRequest);
+            services.RegisterType<Func<JsonNode, Task>>(requestId => cancelRequest(new McpRequest(), requestId));
             _controllerTypes = new Dictionary<string, Type>(StringComparer.Ordinal);
             Assembly protocolAssembly = typeof(McpControllerBase).Assembly;
             RegisterControllers(services, protocolAssembly);
@@ -104,7 +105,18 @@ namespace MCP.Core.Protocol
             JsonObject result = await controller.ExecuteAsync(request, token).ConfigureAwait(false);
             if (request.IsModern == true)
             {
-                result["resultType"] = "complete";
+                bool inputRequired = false;
+                if (request.Method == "tools/call")
+                {
+                    if (result["resultType"]?.GetValueKind() == System.Text.Json.JsonValueKind.String)
+                    {
+                        inputRequired = result["resultType"].GetValue<string>() == "input_required";
+                    }
+                }
+                if (inputRequired == false)
+                {
+                    result["resultType"] = "complete";
+                }
                 result["_meta"] = new JsonObject
                 {
                     ["io.modelcontextprotocol/serverInfo"] = McpProtocol.ServerInfo(_options)

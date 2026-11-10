@@ -18,7 +18,13 @@ namespace MCP.Core.Transport
 
         internal Task Completion { get; set; } = Task.CompletedTask;
         internal McpRequest Request { get; set; }
-        internal TaskCompletionSource<JsonObject> DispatchCompletion { get; } = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource<JsonObject> DispatchCompletion { get; private set; } = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal void PrepareDispatch(McpRequest request)
+        {
+            Request = request;
+            DispatchCompletion = new TaskCompletionSource<JsonObject>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
 
         internal CancellationToken Token
         {

@@ -3,11 +3,14 @@ using Dignus.Actor.Core.DeadLetter;
 using Dignus.DependencyInjection;
 using MCP.Core.Models.Protocol;
 using MCP.Core.Models.Server;
+using MCP.Core.Models.Tools;
 using MCP.Core.Protocol;
 using MCP.Core.Tools;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Reflection;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -20,6 +23,10 @@ namespace MCP.Core.Transport
         private readonly McpDispatcher _dispatcher;
         private readonly Action<Exception> _onError;
         private readonly SemaphoreSlim _requestSlots;
+        private readonly SemaphoreSlim _transportSlots;
+        private readonly string _authenticationScope;
+        private readonly ConcurrentDictionary<string, McpLegacySession> _legacySessions = new ConcurrentDictionary<string, McpLegacySession>(StringComparer.Ordinal);
+        private readonly ConcurrentDictionary<string, McpLegacySamplingRequest> _legacySamplingRequests = new ConcurrentDictionary<string, McpLegacySamplingRequest>(StringComparer.Ordinal);
         private readonly ConcurrentDictionary<long, McpRequestExecution> _requests = new();
         private ActorSystem _actorSystem;
         private IActorRef[] _requestActors = Array.Empty<IActorRef>();
@@ -28,6 +35,7 @@ namespace MCP.Core.Transport
         private Task _acceptTask = Task.CompletedTask;
         private long _nextRequest;
         private long _nextRequestActor;
+        private int _legacySessionCount;
         private int _running;
         private bool _disposed;
 
@@ -41,6 +49,8 @@ namespace MCP.Core.Transport
             _options = options.Copy();
             _onError = onError;
             _requestSlots = new SemaphoreSlim(_options.MaximumConcurrentRequests, _options.MaximumConcurrentRequests);
+            _transportSlots = new SemaphoreSlim(_options.MaximumConcurrentRequests, _options.MaximumConcurrentRequests);
+            _authenticationScope = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(_options.AccessToken)));
             _reader = new McpRequestReader(_options);
             _dispatcher = new McpDispatcher(_options, tools, ReportError, CancelRequestAsync, controllerAssembly, configureServices);
         }
@@ -119,7 +129,7 @@ namespace MCP.Core.Transport
                         context.Response.Abort();
                         break;
                     }
-                    if (_requestSlots.Wait(0) == false)
+                    if (_transportSlots.Wait(0) == false)
                     {
                         context.Response.StatusCode = 429;
                         context.Response.Headers["Retry-After"] = "1";
@@ -154,10 +164,15 @@ namespace MCP.Core.Transport
             }
         }
 
-        private async Task CancelRequestAsync(JsonNode requestId)
+        private async Task CancelRequestAsync(McpRequest notification, JsonNode requestId)
         {
             foreach (McpRequestExecution request in _requests.Values)
             {
+                string sessionId = request.Request?.SessionId ?? string.Empty;
+                if (sessionId != notification.SessionId)
+                {
+                    continue;
+                }
                 if (request.Matches(requestId) == true)
                 {
                     await request.CancelFromClientAsync().ConfigureAwait(false);
@@ -187,11 +202,21 @@ namespace MCP.Core.Transport
         {
             McpRequest request = null;
             CancellationToken token = execution.Token;
+            bool ownsTransportSlot = true;
+            bool ownsRequestSlot = false;
             try
             {
                 _reader.ValidateConnection(context.Request);
                 request = await _reader.ReadAsync(context.Request, token).ConfigureAwait(false);
                 _reader.ValidateVersion(context.Request, request);
+                McpLegacySession session = ValidateLegacySession(context.Request, request);
+                execution.Request = request;
+                if (request.IsResponse == true)
+                {
+                    AcceptLegacySamplingResponse(request, session);
+                    context.Response.StatusCode = 202;
+                    return;
+                }
                 if (request.Method != "initialize")
                 {
                     execution.Identify(request.Id);
@@ -203,13 +228,29 @@ namespace MCP.Core.Transport
                         throw new McpProtocolException(-32600, "An MCP operation requires a request id.");
                     }
                     await _dispatcher.DispatchAsync(request, token).ConfigureAwait(false);
+                    if (request.Method == "notifications/initialized")
+                    {
+                        session?.Initialize();
+                    }
                     context.Response.StatusCode = 202;
                     return;
                 }
-                execution.Request = request;
-                int actorIndex = (int)((Interlocked.Increment(ref _nextRequestActor) & long.MaxValue) % _requestActors.Length);
-                _requestActors[actorIndex].Post(execution);
-                JsonObject response = await execution.DispatchCompletion.Task.ConfigureAwait(false);
+                if (_requestSlots.Wait(0) == false)
+                {
+                    throw new McpProtocolException(-32000, "The MCP request limit is reached.", 429);
+                }
+                ownsRequestSlot = true;
+                _transportSlots.Release();
+                ownsTransportSlot = false;
+                JsonObject response = await DispatchAsync(request, execution).ConfigureAwait(false);
+                if (request.Method == "initialize")
+                {
+                    CreateLegacySession(context.Response, request, response);
+                }
+                if (request.IsModern == false)
+                {
+                    response = await FulfillLegacyInputAsync(context.Response, request, execution, session, response).ConfigureAwait(false);
+                }
                 await WriteAsync(context.Response, 200, response, token).ConfigureAwait(false);
             }
             catch (McpProtocolException error)
@@ -286,10 +327,306 @@ namespace MCP.Core.Transport
                     }
                     finally
                     {
-                        _requestSlots.Release();
+                        if (ownsRequestSlot == true)
+                        {
+                            _requestSlots.Release();
+                        }
+                        if (ownsTransportSlot == true)
+                        {
+                            _transportSlots.Release();
+                        }
                     }
                 }
             }
+        }
+
+        private async Task<JsonObject> DispatchAsync(McpRequest request, McpRequestExecution execution)
+        {
+            execution.Token.ThrowIfCancellationRequested();
+            execution.PrepareDispatch(request);
+            int actorIndex = (int)((Interlocked.Increment(ref _nextRequestActor) & long.MaxValue) % _requestActors.Length);
+            _requestActors[actorIndex].Post(execution);
+            return await execution.DispatchCompletion.Task.ConfigureAwait(false);
+        }
+
+        private McpLegacySession ValidateLegacySession(HttpListenerRequest http, McpRequest request)
+        {
+            string sessionId = http.Headers["MCP-Session-Id"] ?? string.Empty;
+            if (string.IsNullOrEmpty(sessionId) == true)
+            {
+                if (request.IsResponse == true)
+                {
+                    throw new McpProtocolException(-32600, "A sampling response requires its initialized MCP session.");
+                }
+                return null;
+            }
+            if (request.IsModern == true)
+            {
+                throw new McpProtocolException(-32600, "Modern MCP requests must not use a legacy session.");
+            }
+            if (request.Method == "initialize")
+            {
+                throw new McpProtocolException(-32600, "Initialization must not reuse an MCP session.");
+            }
+            if (_legacySessions.TryGetValue(sessionId, out McpLegacySession session) == false)
+            {
+                throw new McpProtocolException(-32600, "The MCP session is not available. Initialize a new session.", 404);
+            }
+            if (session.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+            {
+                RemoveLegacySession(sessionId);
+                throw new McpProtocolException(-32600, "The MCP session expired. Initialize a new session.", 404);
+            }
+            if (session.AuthenticationScope != _authenticationScope)
+            {
+                throw new McpProtocolException(-32600, "The MCP session does not belong to this authenticated caller.", 403);
+            }
+            string version = http.Headers["MCP-Protocol-Version"];
+            if (string.IsNullOrEmpty(version) == false)
+            {
+                if (version != session.ProtocolVersion)
+                {
+                    throw new McpProtocolException(-32600, "The protocol version differs from the initialized session.");
+                }
+            }
+            if (session.IsInitialized == false)
+            {
+                if (request.Method != "notifications/initialized")
+                {
+                    throw new McpProtocolException(-32600, "The MCP initialization handshake is not complete.");
+                }
+            }
+            request.SessionId = sessionId;
+            if (session.IsInitialized == true)
+            {
+                request.LegacyClientCapabilities = (JsonObject)session.Capabilities.DeepClone();
+            }
+            return session;
+        }
+
+        private void CreateLegacySession(HttpListenerResponse http, McpRequest request, JsonObject response)
+        {
+            if (response["result"] is not JsonObject result)
+            {
+                return;
+            }
+            if (request.Parameters["capabilities"] is not JsonObject capabilities)
+            {
+                return;
+            }
+            if (capabilities["sampling"] is not JsonObject)
+            {
+                return;
+            }
+            foreach (KeyValuePair<string, McpLegacySession> existing in _legacySessions)
+            {
+                if (existing.Value.ExpiresAtUtc <= DateTimeOffset.UtcNow)
+                {
+                    RemoveLegacySession(existing.Key);
+                }
+            }
+            if (Interlocked.Increment(ref _legacySessionCount) > _options.MaximumConcurrentRequests)
+            {
+                Interlocked.Decrement(ref _legacySessionCount);
+                throw new McpProtocolException(-32000, "The MCP legacy sampling session limit is reached.", 429);
+            }
+            string sessionId = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+            McpLegacySession session = new McpLegacySession(result["protocolVersion"].GetValue<string>(), _authenticationScope, capabilities);
+            if (_legacySessions.TryAdd(sessionId, session) == false)
+            {
+                Interlocked.Decrement(ref _legacySessionCount);
+                throw new InvalidOperationException("A unique MCP session could not be created.");
+            }
+            http.Headers["MCP-Session-Id"] = sessionId;
+        }
+
+        private void RemoveLegacySession(string sessionId)
+        {
+            if (_legacySessions.TryRemove(sessionId, out _) == true)
+            {
+                Interlocked.Decrement(ref _legacySessionCount);
+            }
+        }
+
+        private void AcceptLegacySamplingResponse(McpRequest request, McpLegacySession session)
+        {
+            if (session == null)
+            {
+                throw new McpProtocolException(-32600, "A sampling response requires an initialized session.");
+            }
+            string responseId = request.Id.ToJsonString();
+            if (_legacySamplingRequests.TryGetValue(responseId, out McpLegacySamplingRequest pending) == false)
+            {
+                throw new McpProtocolException(-32600, "The sampling request is no longer pending.");
+            }
+            if (pending.SessionId != request.SessionId)
+            {
+                throw new McpProtocolException(-32600, "The sampling response belongs to another MCP session.", 403);
+            }
+            if (pending.CancellationToken.IsCancellationRequested == true)
+            {
+                throw new McpProtocolException(-32600, "The sampling request has been cancelled or expired.");
+            }
+            if (request.Response["result"] is JsonObject result)
+            {
+                ValidateSamplingResult(result);
+            }
+            if (_legacySamplingRequests.TryRemove(responseId, out _) == false)
+            {
+                throw new McpProtocolException(-32600, "The sampling response has already been accepted.");
+            }
+            if (pending.Completion.TrySetResult((JsonObject)request.Response.DeepClone()) == false)
+            {
+                throw new McpProtocolException(-32600, "The sampling response has already been accepted.");
+            }
+        }
+
+        private void ValidateSamplingResult(JsonObject result)
+        {
+            if (result["role"]?.GetValueKind() != JsonValueKind.String)
+            {
+                throw new McpProtocolException(-32600, "A sampling result requires a role string.");
+            }
+            string role = result["role"].GetValue<string>();
+            if (role != "assistant")
+            {
+                if (role != "user")
+                {
+                    throw new McpProtocolException(-32600, "A sampling result role must be assistant or user.");
+                }
+            }
+            if (result["model"]?.GetValueKind() != JsonValueKind.String)
+            {
+                throw new McpProtocolException(-32600, "A sampling result requires a model string.");
+            }
+            if (result["content"] is not JsonObject content)
+            {
+                throw new McpProtocolException(-32600, "A legacy sampling result requires one content object.");
+            }
+            if (content["type"]?.GetValueKind() != JsonValueKind.String)
+            {
+                throw new McpProtocolException(-32600, "Sampling content requires a type string.");
+            }
+            string contentType = content["type"].GetValue<string>();
+            if (contentType == "text")
+            {
+                if (content["text"]?.GetValueKind() != JsonValueKind.String)
+                {
+                    throw new McpProtocolException(-32600, "Sampling text content requires a text string.");
+                }
+                return;
+            }
+            if (contentType != "image")
+            {
+                if (contentType != "audio")
+                {
+                    throw new McpProtocolException(-32600, "This sampling request accepts text, image or audio content.");
+                }
+            }
+            if (content["data"]?.GetValueKind() != JsonValueKind.String)
+            {
+                throw new McpProtocolException(-32600, "Sampling media content requires data as a string.");
+            }
+            if (content["mimeType"]?.GetValueKind() != JsonValueKind.String)
+            {
+                throw new McpProtocolException(-32600, "Sampling media content requires mimeType as a string.");
+            }
+        }
+
+        private async Task<JsonObject> FulfillLegacyInputAsync(HttpListenerResponse http, McpRequest request, McpRequestExecution execution, McpLegacySession session, JsonObject response)
+        {
+            int rounds = 0;
+            while (response["result"] is JsonObject result)
+            {
+                if (result["resultType"]?.GetValueKind() != JsonValueKind.String)
+                {
+                    return response;
+                }
+                if (result["resultType"].GetValue<string>() != "input_required")
+                {
+                    return response;
+                }
+                if (session == null)
+                {
+                    throw new McpProtocolException(-32602, "Legacy input requests require an initialized sampling session.");
+                }
+                if (rounds >= 8)
+                {
+                    return McpProtocol.Response(request.Id, new McpToolResult("The sampling input round limit was reached.", true).ToJson());
+                }
+                rounds++;
+                TimeSpan remaining = session.ExpiresAtUtc - DateTimeOffset.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                {
+                    return McpProtocol.Response(request.Id, new McpToolResult("The MCP sampling session expired.", true).ToJson());
+                }
+                using CancellationTokenSource roundCancellation = CancellationTokenSource.CreateLinkedTokenSource(execution.Token);
+                roundCancellation.CancelAfter(remaining);
+                JsonObject inputResponses = new JsonObject();
+                try
+                {
+                    foreach (KeyValuePair<string, JsonNode> inputRequest in result["inputRequests"].AsObject())
+                    {
+                        JsonObject requestedInput = inputRequest.Value.AsObject();
+                        string samplingId = "sampling-" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(32));
+                        JsonNode samplingRequestId = JsonValue.Create(samplingId);
+                        string pendingKey = samplingRequestId.ToJsonString();
+                        McpLegacySamplingRequest pending = new McpLegacySamplingRequest(request.SessionId, roundCancellation.Token);
+                        if (_legacySamplingRequests.TryAdd(pendingKey, pending) == false)
+                        {
+                            throw new InvalidOperationException("A unique sampling request could not be created.");
+                        }
+                        try
+                        {
+                            JsonObject samplingRequest = new JsonObject
+                            {
+                                ["jsonrpc"] = "2.0",
+                                ["id"] = samplingRequestId,
+                                ["method"] = "sampling/createMessage",
+                                ["params"] = requestedInput["params"].DeepClone()
+                            };
+                            await WriteEventAsync(http, samplingRequest, roundCancellation.Token).ConfigureAwait(false);
+                            JsonObject samplingResponse = await pending.Completion.Task.WaitAsync(roundCancellation.Token).ConfigureAwait(false);
+                            if (samplingResponse.ContainsKey("error") == true)
+                            {
+                                return McpProtocol.Response(request.Id, new McpToolResult("The client declined or failed the sampling request.", true).ToJson());
+                            }
+                            inputResponses[inputRequest.Key] = samplingResponse["result"].DeepClone();
+                        }
+                        finally
+                        {
+                            _legacySamplingRequests.TryRemove(pendingKey, out _);
+                        }
+                    }
+                }
+                catch (OperationCanceledException) when (execution.Token.IsCancellationRequested == false)
+                {
+                    return McpProtocol.Response(request.Id, new McpToolResult("The MCP sampling session expired.", true).ToJson());
+                }
+                request.IsInputContinuation = true;
+                request.InputResponses = inputResponses;
+                request.RequestState = string.Empty;
+                if (result["requestState"] != null)
+                {
+                    request.RequestState = result["requestState"].GetValue<string>();
+                }
+                response = await DispatchAsync(request, execution).ConfigureAwait(false);
+            }
+            return response;
+        }
+
+        private async Task WriteEventAsync(HttpListenerResponse response, JsonObject message, CancellationToken token)
+        {
+            if (response.ContentType != "text/event-stream")
+            {
+                response.StatusCode = 200;
+                response.ContentType = "text/event-stream";
+                response.Headers["Cache-Control"] = "no-store";
+                response.SendChunked = true;
+            }
+            byte[] bytes = Encoding.UTF8.GetBytes("event: message\ndata: " + message.ToJsonString() + "\n\n");
+            await response.OutputStream.WriteAsync(bytes.AsMemory(), token).AsTask().WaitAsync(token).ConfigureAwait(false);
+            await response.OutputStream.FlushAsync(token).ConfigureAwait(false);
         }
 
         private async Task TryWriteErrorAsync(HttpListenerResponse response, int status, JsonObject error, CancellationToken token)
@@ -306,6 +643,11 @@ namespace MCP.Core.Transport
 
         private async Task WriteAsync(HttpListenerResponse response, int status, JsonObject message, CancellationToken token)
         {
+            if (response.ContentType == "text/event-stream")
+            {
+                await WriteEventAsync(response, message, token).ConfigureAwait(false);
+                return;
+            }
             byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(message);
             response.StatusCode = status;
             response.ContentType = "application/json; charset=utf-8";
@@ -379,6 +721,9 @@ namespace MCP.Core.Transport
                     _lifetime.Dispose();
                     _lifetime = null;
                     _acceptTask = Task.CompletedTask;
+                    _legacySessions.Clear();
+                    Interlocked.Exchange(ref _legacySessionCount, 0);
+                    _legacySamplingRequests.Clear();
                 }
             }
         }
@@ -392,6 +737,7 @@ namespace MCP.Core.Transport
             _disposed = true;
             await StopInternalAsync().ConfigureAwait(false);
             _requestSlots.Dispose();
+            _transportSlots.Dispose();
         }
     }
 }

@@ -97,13 +97,29 @@ await using McpHttpServer server = new McpHttpServer(new McpServerOptions
 
 모든 컨트롤러 타입은 호스트 의존성 등록 뒤 `LifeScope.Transient`로 등록한다. 서버 구성 시에는 특성·타입만 읽고 인스턴스를 만들지 않는다. 요청·알림마다 DI에서 해당 타입을 resolve해 새 인스턴스를 실행한다. 기본 컨트롤러는 `InitializeController`, `PingController`, `ServerDiscoverController`, `ToolsListController`, `ToolsCallController`, `NotificationsCancelledController`다. 도구 업무는 `tools/call → ToolsCallController → 호스트 핸들러`로 전달한다.
 
+## 요청별 추가 입력 왕복
+
+같은 도구 핸들러가 공식 [dual-era 예제](https://github.com/modelcontextprotocol/typescript-sdk/tree/main/examples/dual-era)처럼 2025 초기화 방식과 2026 요청별 방식을 지원한다. `2026-07-28`의 `tools/call`은 공식 [Multi Round-Trip Requests](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr)를 사용하며 HTTP POST·JSON 응답으로 처리한다. 이 버전에서는 세션·독립 서버 JSON-RPC 요청을 만들지 않는다. 입력 요청 메서드는 `sampling/createMessage`로 제한하며 Sampling은 이 규격에서 비권장으로 지정됐으나 최소 12개월 유지되는 기능이다.
+
+기존 `Func<JsonObject, CancellationToken, Task<McpToolResult>>` 도구 생성자는 유지한다. 새 생성자는 `Func<JsonObject, McpToolCallContext, CancellationToken, Task<McpToolResult>>`를 받는다. `McpToolCallContext`는 해당 요청의 `IsModern`, `IsInputContinuation`, `SessionId`, `ClientCapabilities`, `InputResponses`, `RequestState`, `RequestId`, `AuthenticationScope`를 제공한다. JSON 속성은 요청에서 복사하며 getter도 사본을 반환하므로 호스트가 수정해 원래 기능 선언을 바꿀 수 없다. `AuthenticationScope`는 서버가 검증한 AccessToken의 SHA-256이며 무토큰 서버는 `anonymous`다. 원본 Bearer 토큰을 전달하지 않으며 클라이언트의 자기 신고 정보는 인증 판단에 쓰지 않는다.
+
+호스트는 추가 입력이 필요할 때 `McpToolResult.InputRequired(inputRequests, requestState)`를 반환한다. 2026 응답은 `resultType`, `inputRequests`, 선택적인 `requestState`를 JSON-RPC 결과 바로 아래에 쓰고 일반 도구 content 안에 감싸지 않는다. 입력 요청은 비어 있지 않은 맵이며 각 항목의 `method` 문자열과 `params` 객체를 확인한다. 메서드가 `sampling/createMessage`가 아니거나 `ClientCapabilities.sampling` 객체가 없으면 프로토콜 오류로 거절한다. 2025에서는 정상 초기화를 마친 검증 세션도 필요하다. 생성 업무와 특징·이미지 처리의 의미는 호스트가 소유한다.
+
+클라이언트는 입력 결과를 모은 뒤 새 JSON-RPC ID로 원래 도구 호출을 재시도한다. `inputResponses`와 `requestState`는 `tools/call.params`에 놓으며 `arguments`에 넣지 않는다. `inputResponses`는 객체, `requestState`는 문자열이어야 하며 2025 요청에는 이 두 필드를 허용하지 않는다. 기존 도구 arguments의 입력 스키마 검증은 유지한다. 보낼 결과를 처리할 능력이 없는 클라이언트에 기능을 추정해서 요청하지 않는다.
+
+2025에서는 `initialize.capabilities.sampling`을 선언한 클라이언트에만 암호학적 난수 `MCP-Session-Id`를 반환한다. 이후 요청은 같은 인증과 세션 헤더를 사용하며 `notifications/initialized` 완료 뒤 기능을 사용할 수 있다. capabilities는 초기화 시 사본을 고정하며 세션 수는 `MaximumConcurrentRequests`로 제한한다. 세션은 생성 시점부터 30분간 유효하고 서버 정지 시 해제한다. 만료·없는 세션은 404이므로 새로 초기화해야 한다. Sampling을 선언하지 않은 기존 2025 호출은 세션 없는 일반 도구 호출을 유지한다.
+
+공식 [legacy shim](https://github.com/modelcontextprotocol/typescript-sdk/blob/main/docs/migration/support-2026-07-28.md#legacy-shim-for-input_required)과 [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)의 방식으로 2025 `input_required`를 원래 POST의 SSE `sampling/createMessage` 요청으로 처리한다. 클라이언트는 같은 세션·인증의 별도 POST로 JSON-RPC 응답을 보내며 서버는 202로 접수한다. 서버 RPC ID·세션이 맞는 대기 응답만 한 번 받는다. 잘못된 소속·중복·완료·취소·만료 응답은 거절한다. 각 라운드는 bare result 객체만 `InputResponses`에 넣고 이전 라운드 응답은 대체한다. `requestState`는 바이트에 해당하는 문자열 값을 그대로 전달하고 원 HTTP RPC ID를 유지하며, 라이브러리만 `IsInputContinuation=true`로 재진입한다. 외부 2025 요청의 MRTR 필드는 계속 거절한다. 최대 8라운드이며 클라이언트 오류·거절은 도구 오류 결과로 끝낸다. 마지막 원래 도구 응답을 같은 SSE에 보낸 뒤 닫는다. GET SSE·재연결·이벤트 재생·WebSocket은 제공하지 않는다.
+
+라이브러리는 `requestState`의 의미를 해석하거나 영구 저장하지 않는다. 인증 바인딩·권한·자원 접근·업무 결정을 담은 상태는 호스트가 무결성을 보호하고 만료·원래 요청과의 일치를 확인해야 한다. 원본 요청 ID와 인자, 이미지 내용, 사용자·인증 범위·프로토콜 시대·SessionId의 검증 및 결과 승인·거절은 호스트 책임이다. 2026 외부 재시도는 새 RPC ID를 사용하며 2025 내부 재진입은 신뢰 가능한 `IsInputContinuation`과 원 RPC ID를 확인한다. 별도 업무 큐·영구 재개 저장소나 단일 실행 보장은 제공하지 않는다. 실제 클라이언트 왕복·빌드·테스트는 이번 소스 변경에서 실행하지 않았다.
+
 ## 전송과 입력 범위
 
-- Streamable HTTP의 JSON 응답 경로를 제공한다. SSE 스트림·stdio·구 HTTP+SSE 전송은 제공하지 않는다.
+- Streamable HTTP의 JSON 응답과 2025 요청에 연결된 sampling POST SSE를 제공한다. stdio·구 HTTP+SSE·독립 GET SSE 전송은 제공하지 않는다.
 - `2026-07-28`: `server/discover`, `ping`, `tools/list`, `tools/call`과 버전·기능 메타데이터 및 HTTP 헤더 검증을 제공한다.
-- `2025-11-25`, `2025-06-18`, `2025-03-26`: 세션 ID 없는 HTTP 초기화 호환 경로다. `initialize`와 `notifications/initialized`를 받으며 GET·DELETE는 405, 알림은 202로 응답한다.
-- 도구 목록은 이름순으로 전체 반환한다. 목록 커서·변경 알림·resources·prompts·sampling·elicitation·tasks는 지원한다고 광고하지 않는다.
-- 결과는 텍스트와 선택적 `structuredContent`다. `new McpToolResult(metadata, pngBytes)`는 같은 메타데이터와 함께 표준 PNG 이미지 content를 반환한다. 리소스 링크 전송은 제공하지 않는다.
+- `2025-11-25`, `2025-06-18`, `2025-03-26`: `initialize`와 `notifications/initialized`, 선언된 sampling의 POST SSE 왕복을 지원한다. GET·DELETE는 405, 알림·수락한 클라이언트 응답은 202로 응답한다.
+- 도구 목록은 이름순으로 전체 반환한다. 목록 커서·변경 알림·resources·prompts·elicitation·tasks는 지원한다고 광고하지 않는다. `sampling`은 서버 기능으로 광고하지 않으며 2026 요청별 기능 또는 2025 초기화 기능 선언을 확인한 경우에만 요청한다.
+- 정상 결과는 텍스트와 선택적 `structuredContent`다. `new McpToolResult(metadata, pngBytes)`는 같은 메타데이터와 함께 표준 PNG 이미지 content를 반환한다. 현재 프로토콜의 정상·도구 오류 결과에는 `resultType: "complete"`를, MRTR에는 `resultType: "input_required"`를 사용하며 2025 응답 모양은 유지한다. 리소스 링크 전송은 제공하지 않는다.
 
 입력 스키마는 JSON Schema 2020-12의 제한된 부분집합이다. 단일 `type`, `properties`, `required`, Boolean `additionalProperties`, `items`, `enum`, 숫자·문자열·배열 길이 제한을 사용한다. `title`, `description`, `default`, `examples`는 메타데이터다. `$ref`, 조합 스키마·정규식 등 미지원 키워드는 등록 시 거절한다. 업무 검증은 핸들러가 소유한다.
 
@@ -115,7 +131,7 @@ HTTP 수신·입력 검증 뒤 일반 요청을 액터에 순환 배정한다. �
 
 액터 수와 같은 수의 디스패처 스레드를 서버 시작 시 생성한다. `MaximumConcurrentRequests = 10`이면 액터·디스패처가 각각 10개다. 호스트 도구의 공유 서비스가 동시에 호출될 수 있으므로 서비스 자체의 동시성 계약은 호스트가 소유한다. 호스트의 생성·학습 등 업무 큐를 병렬 실행하거나 대체하지 않는다.
 
-대기 중인 요청도 기존 HTTP 요청 슬롯을 점유하며 별도의 대기 용량을 추가하지 않는다. 슬롯이 모두 사용 중이면 기존 `429`와 `Retry-After`를 반환한다. 알림은 액터 메일박스를 거치지 않아 `notifications/cancelled`가 일반 요청 뒤에서 대기하지 않지만 HTTP 접수 한도는 알림에도 적용한다. 요청 제한 시간에는 입력 읽기·액터 대기·실행이 모두 포함된다. 액터가 요청을 받지 못한 경우에도 완료 신호에 오류를 전달한다.
+대기 중인 일반 요청은 기존 요청 슬롯을 점유하며 슬롯이 모두 사용 중이면 `429`와 `Retry-After`를 반환한다. 본문 읽기는 별도의 `MaximumConcurrentRequests` 크기 전송 슬롯으로 제한하며 파싱 뒤 일반 요청 슬롯으로 이동한다. Sampling 응답 POST와 알림은 전송 슬롯만 사용해 일반 요청 슬롯·액터를 우회하므로 모든 일반 요청이 입력을 기다려도 응답·취소를 처리할 수 있다. 전송 슬롯이 사용 중이어도 429를 반환한다. Sampling 대기 중에는 원래 요청 슬롯은 유지하지만 액터는 비워 두며 응답 뒤 도구 재진입을 다시 배정한다. 요청 제한 시간에는 입력 읽기·액터 대기·모델 왕복·실행이 모두 포함된다. 액터가 요청을 받지 못한 경우에도 완료 신호에 오류를 전달한다.
 
 ## 수명과 취소
 
@@ -123,4 +139,4 @@ HTTP 수신·입력 검증 뒤 일반 요청을 액터에 순환 배정한다. �
 
 정지는 HTTP 수락과 대기·진행 중 요청에 취소를 전달하고 실제 HTTP 처리 종료를 기다린 뒤 액터·디스패처를 해제한다. 재시작하면 새 액터 시스템을 만든다. 핸들러는 자신의 하위 작업 종료를 기다려야 하며 서버가 업무 프로세스를 강제 종료하지 않는다. 연결 종료로 이미 접수한 업무를 취소하지 않고 호스트 업무 큐의 수명은 HTTP 요청과 구분한다.
 
-2025 계열과 `2026-07-28` 경로의 `notifications/cancelled`는 같은 `requestId`의 진행 중 HTTP 호출을 취소한다. 조회·실행 준비·내보내기 등 모든 도구 호출은 같은 요청별 토큰을 사용한다. `initialize`는 취소 대상으로 등록하지 않는다. 완료 호출과 호스트 큐에 접수한 업무는 취소하지 않는다. 동시 클라이언트는 진행 중 요청 ID가 겹치지 않게 사용한다. `StateChanged`는 호출 스레드에서 발생하므로 UI는 자체 스레드로 전달한다. 오류 콜백에는 원본 예외를 전달하고 클라이언트에는 내부 스택을 노출하지 않는다.
+2025 계열과 `2026-07-28` 경로의 `notifications/cancelled`는 같은 `requestId`의 진행 중 HTTP 호출을 취소하며 2025 세션 호출은 세션도 일치해야 한다. Sampling 대기도 원래 요청 취소·제한 시간·세션 만료·서버 종료로 해제하고 대기 RPC 항목을 제거한다. 조회·실행 준비·내보내기 등 모든 도구 호출은 같은 요청별 토큰을 사용한다. `initialize`는 취소 대상으로 등록하지 않는다. 완료 호출과 호스트 큐에 접수한 업무는 취소하지 않는다. 세션 없는 동시 클라이언트는 진행 중 요청 ID가 겹치지 않게 사용한다. `StateChanged`는 호출 스레드에서 발생하므로 UI는 자체 스레드로 전달한다. 오류 콜백에는 원본 예외를 전달하고 클라이언트에는 내부 스택을 노출하지 않는다.

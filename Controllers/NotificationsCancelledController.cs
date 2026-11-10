@@ -9,9 +9,9 @@ namespace MCP.Core.Controllers
     [Controller("notifications/cancelled")]
     internal class NotificationsCancelledController : McpControllerBase
     {
-        private readonly Func<JsonNode, Task> _cancelRequest;
+        private readonly Func<McpRequest, JsonNode, Task> _cancelRequest;
 
-        public NotificationsCancelledController(Func<JsonNode, Task> cancelRequest)
+        public NotificationsCancelledController(Func<McpRequest, JsonNode, Task> cancelRequest)
         {
             _cancelRequest = cancelRequest;
         }
@@ -36,7 +36,7 @@ namespace MCP.Core.Controllers
                     return null;
                 }
             }
-            await _cancelRequest(id).ConfigureAwait(false);
+            await _cancelRequest(request, id).ConfigureAwait(false);
             return null;
         }
     }
